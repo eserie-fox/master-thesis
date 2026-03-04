@@ -1,0 +1,21 @@
+\begin{abstract}
+随着现代数字电路设计逐渐规模化，对其进行静态时序分析（Static Timing Analysis, STA）变得愈加重要且极具挑战性。作为数字电路设计中必不可少的过程，静态时序分析能够在静态时对电路设计进行分析，获取电路的时序特征并报告违反约束的失败路径。针对业界前沿的深亚微米级、纳米级电路，快速-慢速时序模型（Early-late Timing Model）被广泛应用。然而，在此模型下，公共路径悲观（Common Path Pessimism, CPP）现象导致传统分析常将成功的路径误报为失败。针对此问题进行公共路径悲观消除（Common Path Pessimism Removal, CPPR）时，因其与路径高度相关，往往难以兼顾计算效率与分析精度。
+
+本论文聚焦于面向大规模硬件设计的高精度静态时序分析，提出并实现了一种以 \textit{pre-slack} 引导搜索的 \textit{CPPR-after-search} 方法。该方法设计了一套两阶段分析框架，即先进行路径预搜索，随后执行悲观消除。通过对电路拓扑进行充分的数据预处理与关键指标（如 pre-slack、post-slack）的建模分析，本文提出了一种数据感知启发式搜索算法。该算法能在保证可控精度（soundness）的前提下，大幅度压缩悲观消除的计算开销，从而显著加速关键路径的时序分析。
+
+本文使用 C++ 语言实现了该高扩展性算法（命名为 FlashTimer），并在大规模公开数据集上进行了详尽的实验评估。实验结果表明，与现有的静态时序分析基线方法相比，FlashTimer 在几乎不损失精度（平均仅 0.14\%）的情况下，将带有 CPPR 的失败路径分析过程平均加速了38.79倍。此外，该算法的执行时间随数据规模呈现亚线性增长趋势，展示出优异的可扩展性。本研究为超大规模集成电路设计中的时序验证提供了一种高效且精确的新落地方案，具有显著的理论意义和工程应用价值。
+
+\vskip 12bp
+\noindent {\bf 关键词}：静态时序分析，快速-慢速时序模型，公共路径悲观消除，路径搜索，高扩展性
+\end{abstract}
+
+\begin{abstract*}
+As modern digital circuit designs increasingly scale up, performing Static Timing Analysis (STA) on them has become critical and highly challenging. As an essential procedure in digital circuit design, STA statically analyzes circuits to capture their timing characteristics and report failing paths that violate timing constraints. For industry-leading deep sub-micron and nanometer circuits, the early-late timing model is widely adopted. However, under this model, Common Path Pessimism (CPP) often causes traditional analysis to incorrectly report successful paths as failing ones. Conducting Common Path Pessimism Removal (CPPR) to address this issue typically struggles to balance computational efficiency and analysis accuracy due to its strong path-dependency.
+
+This thesis focuses on high-precision static timing analysis for large-scale hardware designs and proposes a \textit{CPPR-after-search} method guided by \textit{pre-slack}. The proposed method introduces a two-stage analysis framework that performs path pre-search followed by pessimism removal. Through comprehensive data preprocessing of the circuit topology and modeling analysis of key metrics (such as pre-slack and post-slack), this work designs a data-aware heuristic search algorithm. The algorithm significantly compresses the computational overhead of pessimism removal while guaranteeing soundness, thereby substantially accelerating the timing analysis of critical paths.
+
+The highly scalable algorithm, named FlashTimer, is implemented in C++ and comprehensively evaluated on large-scale public datasets. Experimental results demonstrate that compared to existing STA baselines, FlashTimer accelerates the failure path analysis process with CPPR by an average of 38.79 times, with almost no loss in accuracy (only 0.14\% on average). Furthermore, the algorithm's execution time exhibits a sublinear growth trend relative to data size, demonstrating excellent scalability. This research provides a highly efficient and accurate practical solution for timing verification in Very Large Scale Integration (VLSI) designs, possessing significant theoretical and engineering value.
+
+\vskip 12bp
+\noindent {\bf Keywords}: Static Timing Analysis, Early-late Timing Model, Common Path Pessimism Removal, Path Search, High Scalability
+\end{abstract*}

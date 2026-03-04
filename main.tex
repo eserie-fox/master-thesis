@@ -1,10 +1,10 @@
 \documentclass[type=master,degree=academic]{njuthesis}
 \njusetup{
   info = {
-    title = {硕士论文标题},
-    title* = {Master Thesis Title},
-    keywords = {LaTeX, njuthesis, 模板},
-    keywords* = {LaTeX, njuthesis, template},
+    title = {面向大规模硬件设计的高精度静态时序分析算法研究与实现},
+    title* = {Research and Implementation of High-Precision Static Timing Analysis Algorithm for Large-Scale Hardware Design},
+    keywords = {静态时序分析, 快速-慢速时序模型, 公共路径悲观消除, 路径搜索},
+    keywords* = {Static Timing Analysis, Early-late Timing Model, Common Path Pessimism Removal, Path Search},
     grade = {2023},
     student-id = {502023330080},
     author = {郑涵文},
@@ -17,13 +17,13 @@
     field* = {Static Analysis},
     supervisor = {李樾,教授},
     supervisor* = {Professor Li Yue},
-    submit-date = {2033-1-1},
-    defend-date = {2033-1-1},
+    submit-date = {2026-05-20},
+    defend-date = {2026-05-20},
     chairman = {答辩主席},
     reviewer = {答辩评委},
-    clc = {中国图书分类号},
-    udc = {国际图书分类号},
-    secret-level = {密级},
+    clc = {TP311},
+    udc = {004.42},
+    secret-level = {公开},
     supervisor-contact = {yueli@nju.edu.cn},
     email = {zheng.hanwen@outlook.com},
   },
@@ -31,11 +31,16 @@
     path = {./images/},
   },
 }
+\addbibresource{refs/refs.bib}
 \begin{document}
 \maketitle
+
+\input{chapters/abstract}
+
 \tableofcontents
 \mainmatter
-\chapter{欢迎}
-使用 \LaTeX{}！
+
+\include{chapters/chap01_intro}
+
 \printbibliography
 \end{document}
