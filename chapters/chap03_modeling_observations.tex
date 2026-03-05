@@ -1,0 +1,87 @@
+\chapter{问题建模与关键观察}
+\label{chap:modeling}
+
+在静态时序分析特别是在带有公共路径悲观消除（CPPR）的场景中，精确的数学建模和严谨的变量定义是构建高效算法的基石。本章将对论文中所研究的核心问题进行形式化定义与抽象，建立一套规范的数学符号体系。首先，我们将数字电路的时序网表抽象为带有极值延时权重的有向无环图模型，并基于快速-慢速（OCV）约束进行公式化定义。随后，我们将明确定义贯穿本研究的三个核心度量指标：即悲观消除前的界限缓冲（\textit{pre-slack}）、公共路径悲观偏差量（\textit{pessimism}）以及真正具备物理意义的时序裕度（\textit{post-slack}）。最后，本章将结合对大规模工业基准测试集的深度统计分析，系统揭示上述关键变量在实际电路中呈现出的偏序空间结构与强相关性分布特征，这为后续设计高效的搜索引导策略奠定了坚实的实证与理论基础。
+
+\section{时序图模型与问题形式化}
+\label{sec:formal_graph}
+
+为方便算法设计与分析，现代 EDA 分析器通常将数字逻辑电路网表及其引脚、连线提取建立为图论视角的计算模型。
+
+\subsection{图网络定义}
+我们定义时序图为带有区间权重的有向无环图（Directed Acyclic Graph, DAG） $G = (V, E)$。
+\begin{itemize}
+    \item \textbf{顶点集 $V$}：代表电路中的电气节点。它包括了芯片的外部输入端口（Primary Inputs, PI）、外部输出端口（Primary Outputs, PO）、组合逻辑单元的输入与输出引脚（Pins），以及时序逻辑单元（如触发器，Flip-Flops）的时钟引脚（Clock Pin）和数据引脚（Data Pin）。特别地，由于时序分析的溯源特性，图 $G$ 通常含有一个虚拟源节点（Virtual Root），用于统一切分整个时钟树的起点。
+    \item \textbf{有向边集 $E$}：代表信号传播的可达路径。每条有向边 $e = (u,v) \in E$ 对应于物理上的互连线延时（Net Delay）或是逻辑门内部的寄生传输延时（Cell Delay）。
+\end{itemize}
+
+在快速-慢速时序模型（Early-Late Model / OCV）下，为了涵盖诸如工艺制造、局部温度与供电漂移等各类物理不稳定因素的极限状况，对于所有的边缘传递时间不再是常数，而是表现为上下确界的闭区间。我们使用两个属性函数将其抽象化：
+\begin{equation}
+    d_{early}(e), d_{late}(e) : E \to \mathbb{R}^+
+\end{equation}
+其中前者代表该边在极其优良环境下传播花费的最短时间，后者则象征极端恶化环境下所需的极限最长延误。显然在物理范畴内始终遵循 $d_{early}(e) \le d_{late}(e)$。
+
+\subsection{路径与累积时延}
+定义图 $G$ 中的一条时序路径 $\pi$ 为连接一系列顶点的边的有序集合，即 $\pi = (v_1, v_2, \dots, v_n)$。
+由此，可以定义信号完整穿过该路径分别对应的最早累积到达时间和最晚累积到达时间：
+\begin{displaymath}
+    D_{early}(\pi) = \sum_{i=1}^{n-1} d_{early}(v_i, v_{i+1}), \quad D_{late}(\pi) = \sum_{i=1}^{n-1} d_{late}(v_i, v_{i+1})
+\end{displaymath}
+
+在针对建立时间（Setup Time）约束最悲惨的覆盖安全计算中，时许验证关心的是源时钟能否给予数据段足够长的充裕时间来进行稳定准备，因而需要比对最晚到达的数据与最早发起的时序捕获窗口之间的差值。这种组合就导致了公共时钟树部分的“分裂计算”。
+
+\section{三大核心指标的定义}
+\label{sec:core_metrics_def}
+
+为了使基于图框架内的路径约束分析实现有效的解耦并适应不同搜索阶段的需要，我们将时序分析中的评估指标进一步拆分为三个相互依存的数学变量：\textit{pre-slack}、\textit{pessimism} 和 \textit{post-slack}。
+
+\subsection{消除前的悲观裕度 (\textit{pre-slack})}
+所谓 \textit{pre-slack}（本文也称极值预裕度），指代在不执行任何公共物理路径回溯检查（即不执行 CPPR 动作）、纯粹依靠时序图节点的 $d_{early}$ 和 $d_{late}$ 动态规划传播推射出所得到的最保守、最安全的节点或路径的松弛程度。
+
+其反映了纯粹使用 OCV 模型粗估的安全性底线。给定任意一条待测逻辑路径的拓扑组合 $\pi$，其 \textit{pre-slack} 具备极其优秀的局部最优子结构特征：
+\begin{equation}
+    pre\text{-}slack(\pi) = \text{RequiredTime}_{early}(v_{sink}) - \text{ArrivalTime}_{late}(v_{sink})
+\end{equation}
+由于在计算 $\text{ArrivalTime}$ 和 $\text{RequiredTime}$ 期间未引入图的局部汇聚修正，它可以使用类似 Dijkstra 算法或是带有记忆化搜索的最短路算法在 $O(|V| + |E|)$ 的线性时间内批量获取，故其在整体搜索上有着难以估量的低代价评估优势。
+
+\subsection{公共路径悲观补偿量 (\textit{pessimism})}
+如第二章所述，“极快”与“极慢”在物理层级对绝对相同的节点进行相悖修饰会激发出严重的时序过设计现象。为了填补这种过设计的坑洞，必须寻找重汇聚点进行悲观扣除。
+
+给定一条分析路径 $\pi$，其起始触发器驱动时钟路径记为 $\pi_{launch}$，捕获触发器时钟路径记为 $\pi_{capture}$。令 $c$ 为上述两条分支在时序树 $G$ 中共同归属的\textbf{最近公共祖先节点}（Lowest Common Ancestor, LCA）。在此情况下，悲观量 \textit{pessimism}（本文统称为 $P_{\pi}$ 或 $P(c)$）严格地被定义为该公共祖先到时钟源点的慢延时与快延时差额：
+\begin{equation}
+    P(c) = D_{late}(root \rightsquigarrow c) - D_{early}(root \rightsquigarrow c)
+\end{equation}
+显然，在同一个图以及确定的 PVT 规格库下，由于时钟源的延时累积非负，总是有 $P(c) \ge 0$。
+
+\subsection{真实评估界限 (\textit{post-slack})}
+\textit{post-slack} 即实施了公共路径悲观消除计算后的真实、能够最终被用来判断芯片时序满足度的法定裕度指标。其等式被严格链接为：
+\begin{equation}
+    post\text{-}slack(\pi) = pre\text{-}slack(\pi) + P(c)
+\end{equation}
+我们的算法终极目标，便是要在数量浩如烟海的组合解空间 $\Pi$ 中，筛选出满足 $post\text{-}slack(\pi) < 0$ 的所有违例路径。但是 $\textit{post-slack}$ 无法像 $\textit{pre-slack}$ 一样方便地被局部图动态规划计算，由于 $c$ 节点的归属与组合整条 $\pi$ 序列严重耦合，它的评估必须依赖相对高昂的分支回溯或是拓扑验证代价。
+
+\section{关键统计观察引出的搜索动机}
+\label{sec:observations_motivation}
+
+传统工业界前处理方法以及搜索并进方法处理现代超大规模硬件受限的根本原因在于：过度依赖缺乏全局指引的盲目探索与拓扑展平。为了设计一种自适应大数据的分析算法，我们首先对目前广泛存在的公开硬件（如 IEEE Tau Contest 竞赛测试例体系）进行了图结构与指标参数的剖面统计。
+
+\subsection{观察一： \textit{pre-slack} 与 \textit{post-slack} 的强相关性特征}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\linewidth]{images/slack_correlation_scatter.png}
+  \caption{TODO：需要一张散点图（Scatter Plot）或者皮尔逊相关系数热力图；展示代表性测试用例（如 tau15\_b 甚至工业级全量测试库）上大量随机路径的 \textit{pre-slack}（X轴）与 \textit{post-slack}（Y轴）的强烈正向线性相关规律。}
+  \label{fig:slack_correlation}
+\end{figure}
+
+如图~\ref{fig:slack_correlation} 的散点矩阵分布所示，虽然任何路径 $\pi$ 的悲观值 $P(c)$ 是由其自身的树拓扑分叉点位置唯一决定，且在庞大的网表中看似呈现无序的高频跳变；但是相对全路径极度可观的单元和互联线延时总累加值， $P(c)$ 的波动区间实则极其狭窄。
+
+统计学结果显著地呈现出一个客观的事实：\textbf{\textit{pre-slack} 最烂（即最为负向）的那些路径群落，具有压倒性的概率其最终生成的 \textit{post-slack} 也是整个系统中最烂的}。也就是说，仅用最轻易计算获得的 \textit{pre-slack} 列出顺序来引导整个计算搜索阵列，“撞见”整个大图中存在真正违例的 \textit{post-slack} 最坏解的首中率（Hit-rate）极其之高。
+
+\subsection{观察二：长尾现象与边界不可预测性}
+由于真实电路设计并非均一散列状态，而是呈现出极为复杂的聚集组合特征（如巨大的移位寄存器网络与复用反馈），真实的最优路径往往并不是独一无二的单个向量，反而呈现为一整片密集的端点集群现象（Cluster Density）。
+
+如果在这样密集的数据网分布中使用绝对的 $pre\text{-}slack$ 加上恒定的静态边界来作为抛除的安全网（也即启发式 Durante 搜索常做的阈值修剪），极度容易导致算法卡死在这个分布的密集区（长尾），陷入穷举验证的噩梦（如在图规模增加时引起指数级算力开销激增）。
+
+\subsection{方法学动机：以 \textit{pre-slack} 为引导的非回溯后验框架}
+针对上述两大观察点，本文抽离提炼出一个全新的极简工作框架—— \textit{ pre-slack } 应当承担探测雷达的作用。既然局部最优结构导致 $pre\text{-}slack$ 可以被闪电生成，我们是否能够颠覆传统范式的束缚？在全图范围内构建一条仅受 $pre\text{-}slack$ 强行单调引导的检索轨道，而后利用其优异的极限定向能力在计算真正高昂代价的 $post\text{-}slack$ 时提供无缝衔接的终断判断（Termination Bounding），以此在不破坏正确下限（Soundness）的前提下全面过滤掉所有“确定安全”的海量末端无效验证路网。这一思想，即是我们在下一章正式提出的 FlashTimer 分析方法的演化基石。

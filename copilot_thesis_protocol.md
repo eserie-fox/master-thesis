@@ -88,9 +88,9 @@ images/
 ### 4.1 图片规则
 - 优先使用 **PDF**（矢量、打印友好）；次选 PNG。
 - 尽可能复用现有图片（来自 `materials/`、本科论文、paper 附图），统一放到 `images/`。
-- 若需要新增图片但当前没有素材：
-  1) 复制根目录的 `dummy-image.png`  
-  2) 重命名到预期路径，例如：`images/flowchart_for_buzz.png`  
+- 若需要新增图片但当前没有素材，**必须并且只能**通过拷贝合法的占位图来解决（严防 LaTeX 编译读取空文件导致 `Division by 0` 错误）：
+  1) **严禁使用 `touch` 等命令创建 0 字节空文件作为图片占位符**。
+  2) 必须直接复制根目录的 `dummy-image.png`（或使用脚本生成合法的像素数据文件），并重命名到预期路径，例如：`cp dummy-image.png images/flowchart_for_buzz.png`。
   3) 在对应章节附近写 **TODO 说明**：图片要表达什么、关键元素、建议来源/生成方式。
 
 示例（正文中）：

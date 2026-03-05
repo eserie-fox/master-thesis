@@ -1,0 +1,79 @@
+\chapter{系统实现与工程优化}
+\label{chap:system_implementation}
+
+在理论上拥有一个优雅且复杂度占优的算法框架仅仅是解决海量网表验证问题的第一步。在现代芯片设计的实际工程落地中，面对动辄包含数千万个逻辑门、上亿条有向连接的超大规模时序图（Timing Graph），任何由于数据结构选择不当或内存非连续访问带来的微小开销，都会在亿万次的子图查询与遍历中被无情放大，最终使得理论上的性能优势被硬件执行瓶颈（如缓存未命中 Cache Miss 或内存墙 Memory Wall）吞噬殆尽。
+
+为了将 FlashTimer 的理论潜力转换为真实世界中无可匹敌的求解速度，本章将详细介本系统在 $\text{C}++$ 底层实现时所采用的一系列深度工程优化技术。首先，探讨对于超大规模时序网络图的展平化（Flatten）与内存池（Memory Pool）布局技术；其次，重点阐述如何将最密集的公共路径点查询（LCA）通过欧拉序遍历转换为区间最值查询（RMQ），从而实现了极为极端的 $\mathcal{O}(1)$ 常数级响应时间；最后，解析一种面向多核处理器的无锁（Lock-free）动态多线程调度架构，以成倍压榨现代处理器的并行算力。
+
+\section{时序网络度量图的高效内存布局}
+\label{sec:memory_layout}
+
+静态时序分析器的数据结构基石是对时序拓扑网络的有向无环图保存方案。传统的面向对象（Object-Oriented）设计倾向于为每个引脚（Pin）和每次连接（Net/Wire）单独分配堆内存结构，并使用指针加以链接。这种模式会使得图节点散落在内存的各个碎片角落中。当搜索算法沿着路径进行深度延伸时，CPU 缓存需要不断抓取各处不连续的随机内存块（Random Memory Access），导致极高的 L1/L2 缓存未命中率。
+
+这在处理海量节点时是不可接受的，因此在我们的 FlashTimer 架构中，采用了一种类似于\textbf{压缩稀疏行（Compressed Sparse Row, CSR）的连续内存块组织方式（Contiguous Data Layout）}来映射图：
+\begin{itemize}
+    \item \textbf{节点平坦化（Node Flattening）}：利用紧凑的连续一维数组（std::vector 和原生 Array）来保存所有结点的到达时间、要求时间、极早期/最晚期时延等属性。每个节点被分配一个连续自增的非负整数 ID 作为直接寻址索引（Index）。
+    \item \textbf{边表邻接压缩（Adjacency Edge Compression）}：网络中用于表示逻辑驱动关系的指针全部被摒弃，代之以“偏移数组（Offset Array）”和“目标索引数组（Target Array）”相配合。任何针对节点 $i$ 扇出邻居的遍历，完全转变成了对内连续内存的一小段顺次访问操作，完美契合了 CPU 的预取机制（Prefetcher）。
+\end{itemize}
+得益于此，算法前置的拓扑延时累加过程可以完全在高速缓存内部稳定流动，为接下来严苛的局部寻根操作争取到了极其充沛的时间宽限。
+
+\section{公共路径极速查询：基于 RMQ 的 LCA 转换}
+\label{sec:lca_to_rmq}
+
+在进入算法第二阶段验证后，程序需要面对最为高频的一个调用函数：即给定任意由一对时钟管脚组合而来的序列 $\pi_{launch}$ 与 $\pi_{capture}$，要求极速返回两者在庞大时钟树中的分叉点——最近公共祖先（LCA, Lowest Common Ancestor）以计算悲观量 $P(c)$。
+
+在一个具有几十万级时钟扇出、树高数百层的复杂时钟树上，采用常规的层级向上遍历匹配（Naive Bottom-Up Traversal，时间复杂度 $\mathcal{O}(TreeHeight)$）或二分跳转的树上倍增法（时间复杂度 $\mathcal{O}(\log N)$）在应对千万次循环时也会显得极为吃力。为实现极致性能，本文在预处理时，将具有偏树特征的公共路径查询等价转化为**区间最值查询问题（Range Minimum Query, RMQ）** \cite{TODO_tarjan_lca}。
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\linewidth]{images/lca_rmq_euler_tour.png}
+  \caption{TODO：需要一张演示时钟树怎样通过前序遍历展开成欧拉序列（Euler Tour Array）并将其节点深度（Depth）转化为最小区间值定位的过程图。用于直观展示 LCA 到 RMQ 的经典等价映射关系。}
+  \label{fig:lca_rmq_euler}
+\end{figure}
+
+如图~\ref{fig:lca_rmq_euler} 所示，我们的预加载加速模块包括以下数理推演步骤：
+\begin{enumerate}
+    \item \textbf{欧拉序数组映射 (Euler Tour Generation)}：我们在建立完时钟网表映射后，启动单趟深度优先遍历（Depth First Search, DFS）。在遍历树的时候，记录每个节点被访问到的时间戳事件，生成两份数组映像，一份是表示遍历轨迹的欧拉序节点数组 $E[1..2N]$，一份是对应上述节点深度的深度数组 $D[1..2N]$。
+    \item \textbf{首切索引维护 (First Appearance Array)}：记录任何一个图节点 $v$ 在上述欧拉序列中首次被访问的数组下标寄存，记为 $First[v]$。
+    \item \textbf{降维映射}：此时，寻找图上两点 $u$ 和 $v$ 的 LCA 问题，就能够通过严密的数学等价转换为：在深度数组 $D$ 从下标 $\min(First[u], First[v])$ 到 $\max(First[u], First[v])$ 的这段闭区间内，寻找拥有\textbf{最小深度数值}的那一个元素，该元素在 $E$ 中对应的即是最早的分叉节点。
+\end{enumerate}
+
+\textbf{基于稀疏表（Sparse Table）的 $\mathcal{O}(1)$ 解析}：
+为了解决这个 RMQ 问题，由于时钟网属于静态拓扑（Static Topology），在执行测试阶段树的形状不会发生动态修改。于是系统运用稀疏表（Sparse Table, ST）算法，即利用动态规划填表记录：
+\begin{equation}
+    ST[i][j] = \min (D[i \dots i+2^j-1])
+\end{equation}
+ST 表的建表构建时间与空间代价仅为 $\mathcal{O}(N \log N)$（在此量级通常不足 $0.1$ 秒与几十兆内存），而一旦预处理完成，由于重叠闭环可以直接用两次区段覆盖，任意两点的 LCA 求解代价即刻被拉平为**绝对常数时间 $\mathcal{O}(1)$**。这意味着不论时钟树拓扑多长多深，算法查找并实施悲观校正的过程，只需两次纯粹的数组索引加减访问，彻底消磨了原先阶段的最长耗时瓶颈！
+
+\section{高度并行的多线程动态调度架构 (Multi-thread Concurrency)}
+\label{sec:parallel_architecture}
+
+进入以摩尔定律放缓为特征的后纳米时代后，主频红利正在被多核结构（Multi-core Processors）所取代。本实现的最高层级是对 FlashTimer 两阶段算法实施充分解耦的并发释放设计。
+
+如前一章理论所述，FlashTimer 的界限终止特性是以 $S^*$ 作为共享动态上限的。如何在一套系统中让大量任务不仅极速并行，又同时对同一个阈值做出反应而不被相互死锁困扰，是工程优化的巅峰所在。
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.9\linewidth]{images/parallel_architecture.png}
+  \caption{TODO：需要一张 FlashTimer 多线程处理（生产者-消费者架构）的架构示意图。描绘阶段一部分（主线程）分发 Candidate Batch，阶段二（工作池中的 N 个并发线程）并行提取，利用局部缓存与无锁全局阈值机制刷新 $S^*$ 的全流程。}
+  \label{fig:parallel_architecture}
+\end{figure}
+
+本研究采用了图~\ref{fig:parallel_architecture} 展示的异步流转架构：
+\begin{enumerate}
+    \item \textbf{自适应批处理流水线（Adaptive Batch Pipeline）}：
+    我们将阶段一的前缀树解压器固化在一个具有高优先级的生产者线程中，它不再逐一定时抛出路径，而是利用轻量级探针按区块打包（例如以 500 到 1000 条路径为一个 Batch）投入无锁并发列队（Lock-free Concurrent Queue）中。
+    \item \textbf{无锁原语更新界限底线 (Atomic $S^*$ Update)}：
+    如果每次某一个子线程在获取阶段二真实裕度并想尝试去更新甚至探测全系统的阈值限制时都需要加锁，那线程之间的争抢（Contention）会导致海量阻塞。为了杜绝这一隐患，我们使用 C++11 标准的原子操作类型库（\texttt{std::atomic}）来接管最差界准变量 $S^*$：
+    \begin{verbatim}
+    // 并发下的原子无锁覆盖，采用更强的 CAS（Compare-And-Swap）机制或者松散内存次序
+    auto expected = S_worst.load(std::memory_order_relaxed);
+    while (new_val < expected) {
+        if (S_worst.compare_exchange_weak(expected, new_val)) break;
+    }
+    \end{verbatim}
+    \item \textbf{全局强制截杀 (Global Interrupt via Read Tolerance)}：
+    工作池中的各个独立线程，在其批次开始时刻仅需采用极低廉的读取动作观测当前最新的全局 $S^*$（原子变量共享读开销极低）。凡是自己获取到的下一个解包，倘若存在 $pre\text{-}slack(\pi_{current}) \ge S^*$，说明当前这个批次剩下的所有内容对于提升系统的下限已经毫无帮助，该独立线程能即刻终止任务。而当所有的工作线程池触发了全网中止反馈或列队掏空后，即可实现干净利落的提前阻断与计算停止。
+\end{enumerate}
+
+该系列技术保证了，一旦遇到极度复杂的互连与难以逾越的节点网络，我们的算法既能在底层以 $\mathcal{O}(1)$ 跳过大量无关分支，又能以极为优良的扩展性（Scalability）占满主机上的全部核算力，形成强有力的工程断层级碾压。在即将阐述的第六章实验报告中，这种实现框架展现出极其惊人的实测提速收益。

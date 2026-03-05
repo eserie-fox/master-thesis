@@ -1,0 +1,144 @@
+\chapter{FlashTimer 方法：基于 \textit{pre-slack} 引导的无回推搜索}
+\label{chap:flashtimer}
+
+针对现有静态时序分析工具在面临数千万级别节点的超大规模测试集成电路中由于图解构恶化与密集约束长尾效应而遭遇的计算瓶颈，并基于前一章中关于 \textit{pre-slack}（预裕度）和 \textit{post-slack}（真实裕度）所具备的强统计相关性和相对波动界限属性，本文正式提出了一种名为 \textbf{FlashTimer} 的高扩展性快速悲观消除搜索机制。
+
+本章将全方位深入阐述 FlashTimer 方法的核心内核。首先，我们将介绍一种基于 \textit{CPPR-after-search} 思想的创新型解耦两阶段计算框架，通过将昂贵的局部树形搜索与具有极低成本的整网图指标探测过程实施逻辑切分，极大地消弭了前期对非相关安全分区的无谓解组开支；其次，针对性地详细论证算法是如何在“前期探测段”输出严格排序序列，在“后期检验段”计算公共路径悲观补偿，并在多项式时间内完美匹配严密安全的算法终止机制；接着，进一步抽象出控制精度与速度博弈边界的权衡模型，以应对不同工程场景下的灵活求解需求；最后，本章将严格论述 FlashTimer 的正确性（Soundness）与理论复杂度。
+
+\section{核心两阶段算法框架架构 (Two-Stage Architecture)}
+\label{sec:two_stage_framework}
+
+在传统的 \textit{CPPR-before-search}（如 UITimer 等）中，由于分析器在算法起始阶段对解的长相一无所知，这迫使它不得不遍历每一个包含潜在公共时钟节点的触发器对以进行最恶劣预修正，这种“先付出极大代价铺平所有道路，再寻找捷径”的策略在海量网表上无异于一场灾难。
+
+为了规避这一天然的缺陷设计，FlashTimer 从本质上属于一种深度进化的 \textit{CPPR-after-search}。它的核心指导理念是“\textbf{以极低的成本进行粗筛，仅对高度疑似的目标投入全量资源进行精计算}”。为此，FlashTimer 被设计为一种高度解耦的两阶段流式处理框架（Stream Processing Framework）。
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.9\linewidth]{images/flashtimer_flowchart.png}
+  \caption{TODO：这里需要一张展示 FlashTimer 两阶段流程的架构图。左半部分需展示 Stage 1（基于 $pre\text{-}slack$ 的候选生成池、优先级流），右半部分展示 Stage 2（LCA 评估、计算 $P(c)$、终止条件判断）。请从 paper 的插图中移植并重绘成矢量 PDF 或高清晰度图。}
+  \label{fig:flashtimer_flowchart}
+\end{figure}
+
+如图~\ref{fig:flashtimer_flowchart} 所示，整个分析器的解题链路被明确划分为串行交互的两个层级：
+\begin{enumerate}
+    \item \textbf{阶段一：基于 \textit{pre-slack} 引导的候选路径生成列队（Pre-search \& Priority Queueing）} \\
+    在此阶段，程序对整张包含亿万条边的有向无环图 $G$ 执行无视 CPPR 的一趟纯拓扑扫描（通常只需单次有向图遍历加上隐式路径展开机制），生成一个按照 $pre\text{-}slack$ 严格单调递增排列的路径数据流（Stream）。由于不触及树节点的重溯，该阶段的时间常数极小。
+    \item \textbf{阶段二：按需执行的精确修补与中断判定（Exact Check \& Early Termination）} \\
+    作为队列消费者，阶段二从生成的路径流中逐个弹顶出路径 $\pi$，寻找其首尾时钟段的最近公共祖先（LCA），并计算实际的悲观值 \textit{pessimism} $P(c)$，以此还原出真实时序裕度 $post\text{-}slack(\pi)$。并在每次探查验证结束后，利用本文独特的上下界条件进行终止判定（Bounding check），一旦满足安全阈值，直接阻断后续队列分析过程，拒绝任何长尾的穷举循环。
+\end{enumerate}
+
+这种流式消费的上下游解耦机制不仅仅杜绝了全局静态图更改爆炸的可能性，同时由于天然的队列隔离属性，其底层极其易于在后文中的现代众核 CPU 架构上进行生产者-消费者（Producer-Consumer）模型的高效多线程调度实现。
+
+\section{阶段一：候选队列发生器与偏序流结构}
+\label{sec:stage_one_generator}
+
+在明确了两阶段架构后，我们需深入阶段一的功能细节：如何保证为下游稳定且低延迟地提供高质量的指引号角。这个号角，正是严格排序后的 $pre\text{-}slack$ 流。
+
+\subsection{隐式图前缀与路径扩增}
+前述已经证明，在不考虑真实公共路径补偿 $P(c)$ 的情况下，路径的最晚到达要求时间等于 $d_{early}$ 与 $d_{late}$ 相互独立累计得到的极端极值，这就是一种毫无异议的单向带权图中的局部最短/长路径问题。这意味着，如果我们想按 $pre\text{-}slack$ 升序生成前 $K$ 个可能失败的结果，能够无缝借用成熟的 $K$ 端最短路树（$K$-Shortest Paths, KSP）算法（如 Eppstein 算法或基于 deviation 偏离边的 A* 算法搜索）。
+
+为在大规模路网下获得极致速度，FlashTimer 使用前缀偏离树（Prefix Deviation Tree）结构隐式维护整个图。我们在终点处注入虚拟拉取终端，并维护一个全局的优先级队列（Priority Queue），其键值（Key）为：
+\begin{equation}
+    Key(\pi) = pre\text{-}slack(\pi)
+\end{equation}
+
+在初始期，只有拥有整个设计中“绝对最恶劣 $pre\text{-}slack$ 界限”的极核路径会被推入列中。每一次下游发出取流指令（Fetch Next）时，算法弹出当前的最差路径 $\pi_{top}$ 供下游处理，同时利用该路径在所在偏离树末端的延用边（Deviation Edges），衍生出次差的子路径群并重新压回优先级队列中。
+这种懒加载（Lazy Evaluation）的迭代生成法保证了：
+\begin{itemize}
+    \item \textbf{彻底跳过无关域}：整个扩展都是受当前最优界限直接导向的。任何 $pre\text{-}slack$ 呈现健康正向（例如大范围的纯组合逻辑模块非关键路径）都不可能在上层被触碰到，从根源断绝了针对非重要时序节点的 CPPR 计算铺张。
+    \item \textbf{严格的单调序列}：发生器对外提供的 $\pi_1, \pi_2, \pi_3 \dots \pi_i$ 队列，由弹出机制保证，从纯 \textit{pre-slack} 视角其具备绝对强无偏的单调不减特征，即任何时刻输出有：
+    \begin{equation}
+        pre\text{-}slack(\pi_i) \leq pre\text{-}slack(\pi_{i+1}) \quad \forall i \ge 1
+    \end{equation}
+\end{itemize}
+
+单调性是 FlashTimer 的算法灵魂，也是构建第二阶段核心终止判定条件（Termination Condition）的唯一基石。
+
+\section{阶段二：精确度量与终止条件的全局正确性}
+\label{sec:stage_two_evaluation}
+
+虽然阶段一提供的流信息极具指导潜能，但 $pre\text{-}slack$ 并不是工程师们用于芯片验收签核（Sign-off）的核心法定指标。由于图节点的极端组合叠加，在未校正之前的极端路径即使具有极其负向的 \textit{pre-slack}，只要其起止物理触发器之间蕴含巨大的共同缓冲器扇出前缀，往往会携带等比例庞大的惩罚量。补偿修正后，它极可能摇身一变成为一个完全合法的非关键安全支路。这一错位关系如何低成本被解开，端视阶段二内部判决器的执行逻辑。
+
+\subsection{评估器与最差界限寄存 (Worst-Bound Registry)}
+设算法被触发目的是寻找整个设计网络中真正 $post\text{-}slack$ 最低的一条关键路径（或者延伸为前 $K$ 条最差路径，为通俗推导这里先假设 $K=1$）。于是系统内部在内存中初始化并维护一个暂存全局状态变量 $S_{worst}$（本文亦标记为 $S^*$），表示当前所有已验证过、具有物理计算意义路径中的最小真实裕值（即最恶劣/违例最深的 \textit{post-slack}），初始值为 $+\infty$。
+
+在每一轮校验周期（Loop Cycle $i$）中，操作流程详述如下：
+\begin{enumerate}
+    \item 从第一阶段的优先级队列弹取流式的当前首节点路径 $\pi_i$；注意，由上一节推导可知，此条路径必然携带截止目前未弹出集合中\textbf{数值最小}的 $pre\text{-}slack(\pi_i)$。
+    \item 结合图底层的树状分析模块，利用高级最近公共祖先（LCA）查寻算法定位到其发射分支与捕获分支交叉口 $c$。
+    \item 提取并结合该路径节点的迟/早（late/early）延迟值，按本文定义严格计算得到纠偏标定值 $P_{\pi_i} = P(c) \ge 0$。
+    \item 生成最终修正指标与物理判决度量：
+    \begin{equation}
+        post\text{-}slack(\pi_i) = pre\text{-}slack(\pi_i) + P_{\pi_i}
+    \end{equation}
+    \item \textbf{全局底限刷新}：比较当前算得的值与记录中心的最差结果。若当前值确实更差（更严峻，即数值更低），则执行覆盖记录：
+    \begin{equation}
+        S^* = \min(S^*, post\text{-}slack(\pi_i))
+    \end{equation}
+\end{enumerate}
+
+在这个过程中，我们利用非常明确的方向性验证，实现了精准的局部解构剖析（Local Decomposition），每一次图数据的存取均高度绑定在真正有极大概率产生影响的实体树枝上，而不是像 \textit{before-search} 预先在全片晶圆节点上盲目更新权重。
+
+\subsection{FlashTimer 极简终止判定定理 (The Termination Theorem)}
+\label{subsec:termination_theorem}
+
+目前主流采用“边搜边消除”流派算法的核心死穴在于其对长尾分布（极大批量的近似但不同的密集路径块）的束手无策，为了判断某条路径是否为安全路径，总是依赖启发性的固化深度探测。在这个过程中只要稍微遇到一连串错乱反馈极差的网群区块，程序的探索空间就会被迫像滚雪球般无止境摊开。\textbf{FlashTimer 从根本上抛弃了盲目的探索界限定义，将终止的锁链扣押在严丝合缝的数学偏序不等式上}。
+
+我们建立如下被称为“界限交汇判定定理”的核心机制：
+\\\textbf{定理 [FlashTimer Termination Theorem]：}\\
+在算法进入任意第 $k$ 轮流处理时，若由上游队列中提取出的候选测试路径 $\pi_k$ 它的纯悲观度前置导向满足：
+\begin{equation}
+    pre\text{-}slack(\pi_k) \ge S^* 
+\end{equation}
+则验证操作可以\textbf{立即且安全地强制中断整个执行周期（Halt Execution）}。我们绝对断言（Soundness Property）：在剩余的全体未测算浩瀚路径解空间池中，绝不可能再探测出比现存全局历史暂存 $S^*$ 更恶劣的关键时序风险！
+
+\textbf{严密性证明 (Proof of Soundness)：}
+
+根据第三章中的时序物理法则与本文的抽象系统建模，任何由快速-慢速偏差计算所带来的延迟公共祖先抵消 $P(c)$ 值定义为到达时间的物理插值，必有：
+\begin{equation}
+    P(\pi) \ge 0, \quad \forall \pi \in \Pi
+\end{equation}
+由于真实时序边界公式要求：
+\begin{equation}
+    post\text{-}slack(\pi) = pre\text{-}slack(\pi) + P(\pi) 
+\end{equation}
+综合两式立即得出，单条路径真实的裕度必定不可逾越其悲观下的边界（必定大于或等于 $pre\text{-}slack$）：
+\begin{equation}
+    \label{eq:proof_bound}
+    post\text{-}slack(\pi) \ge pre\text{-}slack(\pi)
+\end{equation}
+
+另一方面，回想阶段一中上游优先流构建系统的绝对单调流释出法则，对于任何一次在未来轮数弹出的后续任意深层路径 $\pi_m$ (亦即 $m > k$)，它必定遵循严格的推递上升不减数列：
+\begin{equation}
+    \label{eq:proof_monotonic}
+    pre\text{-}slack(\pi_m) \ge pre\text{-}slack(\pi_k)
+\end{equation}
+
+如果当前的检测轮次使得 $pre\text{-}slack(\pi_k) \ge S^*$ 这一雷达侦测触发极限定理成立了，我们可以使用传递律将所有的边界关系链接起来，得到属于任意后续生成路径 $m$ 的界限限制包络不等式链：
+\begin{displaymath}
+    post\text{-}slack(\pi_m) \mathop{\ge}^{(\text{等式}\ref{eq:proof_bound})} pre\text{-}slack(\pi_m) \mathop{\ge}^{(\text{等式}\ref{eq:proof_monotonic})} pre\text{-}slack(\pi_k) \ge S^*
+\end{displaymath}
+也即：$post\text{-}slack(\pi_m) \ge S^*$ 对一切所有可能的后续解永久性成立。因此剩余解均属于对更新最坏路径目标安全（Safe/No violation）或无效（Trivial）的空间域。结论证毕。
+
+这种使用单侧 \textit{pre-slack} 并随着历史最优真实验证态动态浮标而无缝贴合的“夹角中断”思路，优雅干脆地利用了数学上的包络特性，一举突破了过去因路径过于密集而不得不进行巨额扩展搜索的计算痛点。
+
+\section{可调的精度-性能权衡机制 (Epsilon-Tradeoff)}
+\label{sec:epsilon_tradeoff}
+
+工业界在某些早期探测（Early Analysis Phase）需求场景下，除了需要“绝对毫无偏差”的结果作为最终流片依据（Sign-off），有时更渴望以细微甚至可以忽略的误差牺牲换取指数级分析效率的提升。
+
+FlashTimer 的算法内核能够毫无障碍地拓展为带有精确度弹性权衡（Accuracy-Performance Tradeoff）的高级版本。如果用户允许分析报告含有不大于极小容忍常数 $\varepsilon$ (通常在几至几十皮秒级别，属于对时钟周期微乎其微的影响余波) 范围内的非致死边界误差。我们将上述严格的界限交汇定理轻微下调：
+\begin{equation}
+    pre\text{-}slack(\pi) \ge S^* - \varepsilon
+\end{equation}
+
+此时，我们能在算法进入最艰难的长尾遍历极核地段前，提前 $\varepsilon$ 的宽幅剪断计算通道。这个机制在针对由于结构异常复杂的大面积锁存器互联而导致 $pre\text{-}slack$ 序列极其平滑、但 $P(c)$ 各异导致 $post\text{-}slack$ 不断反复穿越的高密度丛集区域时，能够在绝大部分违例已被网罗入安全界内后直接舍弃其余计算。实验章节的后续分析（详见第 \ref{chap:experiments} 章）将重点剖析通过注入极微小的弹性因子，FlashTimer 甚至能够在原本数小时跑不通的千万组合连线上在几分钟内斩获与绝对最优解别无二致的高阶次优解集群。
+
+\section{算法时间复杂度讨论与对比}
+\label{sec:algorithm_complexity}
+
+若针对整体执行进行空间时间维度定性估计，对于一张拥有 $|V|$ 个节点与 $|E|$ 个边的图网络：
+1. **阶段一探测建图**：由于使用记忆化扩展寻径，基础界限图的前缀解算只需要经过单次的图反拓扑遍历。基于 Bellman-Ford 等广度探针复杂度被限定在其多项式常数范畴如 $O(|V| + |E|)$ 或 $O(|E| \log |V|)$。
+2. **阶段二检测核验**：假设终止交集于寻找出了 $K'$ 个实际执行了 LCA 上溯及 \textit{pessimism} 等长计算的子路径片段集。其核心花费主要是 $K'$ 次动态重构的运算量 $\mathcal{O}(K' \cdot \text{Cost}_{LCA})$。
+
+由于有了核心终判特性的保护，$K'$ 被完美控制在了与真实的非冗余危险网群数量相同级（或者说在存在 $S^*$ 快速逼近的情况下通常远小于数以十万计的全局节点总量）。作为对比，\textit{CPPR-before-search} 则被迫接受 $\mathcal{O}(|V| \cdot C_{update})$ 这样将数亿级全节点网格推演入最坏执行区间的厄运。这也是本算法能够超越传统理论，在应对千万乃至上亿电路节点规模时提供无可匹敌亚线性响应扩展性（Sub-linear Scalability Expansion）的数理本因。
